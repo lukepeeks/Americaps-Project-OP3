@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 import numpy as np  # Nodig voor pd.NA en .isna() checks
 
 #In dit script is heel erg veel herhaling, ik heb regelmatig een vrij beknopte uitleg gegeven gezien het feit dat het al erg vaak is uitgelegd.
-
+#Ook is er gebruik gemaakt van ChatGPT, dit is gebruikt om te debuggen indien ik er niet uitkwam en kleine verbeteringen toe te passen waar nodig.
 
 # Hier wordt het bestand van mij ingelezen, Beer.csv.
 df = pd.read_csv('Beer.csv')
