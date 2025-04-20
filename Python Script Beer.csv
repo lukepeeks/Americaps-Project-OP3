@@ -1,0 +1,686 @@
+import pandas as pd
+from datetime import datetime, timedelta
+import numpy as np  # Nodig voor pd.NA en .isna() checks
+
+# Laad het DataFrame
+df = pd.read_csv('Beer.csv')
+
+# Bestandsnamen voor output (consistent met originele 'DatumTijdFix')
+OUTPUT_FILENAME = '/Users/lukepeeks/Downloads/Americaps/Beer_cleaned.csv'
+REMOVED_ROWS_FILENAME = '/Users/lukepeeks/Downloads/Americaps/Beer_removedlines.csv'
+
+
+def clean_csv():
+    global df  # Geeft aan dat de globale df wordt aangepast
+
+    print(" Start met opschonen van het bestand.")
+    initial_row_count = len(df)
+    print(f"Aantal rijen bij start: {initial_row_count}")
+
+    # Verwijder dubbele rijen
+    rows_before = len(df)
+    df = df.drop_duplicates()
+    dropped_duplicates = rows_before - len(df)
+    print(f"✅ - {dropped_duplicates} dubbele rijen verwijderd.")
+
+    # -------------------------------------- Controle op 'Audit van Leverancier' --------------------------------------
+    print("--- Controle op kolom: 'Audit van Leverancier' ---")
+    toegestane_waardes = {'Goedgekeurd', 'Afgekeurd', 'Herziening vereist'}
+
+    # Zoek rijen met ongeldige waarden (NaNs worden genegeerd)
+    ongeldige_rijen = df[
+        ~df['Audit van Leverancier'].isin(toegestane_waardes) &
+        df['Audit van Leverancier'].notna()
+        ]
+
+    if ongeldige_rijen.empty:
+        print("✅ - Alle waarden in 'Audit van Leverancier' zijn geldig of leeg.")
+    else:
+        print(f"⚠️ - {len(ongeldige_rijen)} rijen met ongeldige waarden in 'Audit van Leverancier' gevonden.")
+        # print(ongeldige_rijen)  # Eventueel inschakelen voor debug
+    # Geen imputatie zoals in het origineel
+    # ---------------------------------- DatumTijd Imputatie (Originele iterrows-stijl) ----------------------------------
+
+    date_pairs = [
+        ('GrindingDatumTijdStart', 'GrindingDatumTijdEind', 'GrindingDurationHours'),
+        ('PackagingDatumTijdStart', 'PackagingDatumTijdEind', 'PackagingDurationHours'),
+        ('FillingDatumTijdStart', 'FillingDatumTijdEind', 'FillingDurationHours')
+    ]
+
+    for start_col, end_col, duration_col in date_pairs:
+        print(f"--- Verwerken van datumtijd-koppel: {start_col} / {end_col} ---")
+
+        # Zet kolommen om naar datetime
+        df[start_col] = pd.to_datetime(df[start_col], errors='coerce')
+        df[end_col] = pd.to_datetime(df[end_col], errors='coerce')
+
+        # Filter rijen waar beide datums aanwezig en geldig zijn (eind > start)
+        valid_rows = df[start_col].notna() & df[end_col].notna() & (df[end_col] > df[start_col])
+
+        if valid_rows.any():
+            # Bereken de duur in uren
+            df[duration_col] = (df.loc[valid_rows, end_col] - df.loc[valid_rows, start_col]).dt.total_seconds() / 3600
+
+            # Gemiddelde duur berekenen (zoals origineel)
+            gemiddelde_duur = round(df.loc[valid_rows, duration_col].mean(), 2)
+
+            if pd.notna(gemiddelde_duur):
+                print(f"ℹ️ - Gemiddelde duur berekend: {gemiddelde_duur:.2f} uur")
+                gemiddelde_timedelta = timedelta(hours=gemiddelde_duur)
+
+                # Imputatie via iterrows (zoals origineel)
+                imputaties_start = 0
+                imputaties_eind = 0
+
+                for index, row in df.iterrows():
+                    # Imputeer ontbrekende startdatum
+                    if pd.isna(row[start_col]) and pd.notna(row[end_col]):
+                        df.at[index, start_col] = row[end_col] - gemiddelde_timedelta
+                        imputaties_start += 1
+                    # Imputeer ontbrekende einddatum
+                    elif pd.isna(row[end_col]) and pd.notna(row[start_col]):
+                        df.at[index, end_col] = row[start_col] + gemiddelde_timedelta
+                        imputaties_eind += 1
+
+                print(f"✅ - {imputaties_start} ontbrekende waarden geïmputeerd in {start_col}.")
+                print(f"✅ - {imputaties_eind} ontbrekende waarden geïmputeerd in {end_col}.")
+            else:
+                print(
+                    f"⚠️ - Geen geldige gemiddelde duur kunnen berekenen voor {start_col}/{end_col}. Imputatie overgeslagen.")
+        else:
+            print(f"⚠️ - Geen geldige datumparen gevonden voor {start_col}/{end_col} om gemiddelde duur te berekenen.")
+
+        # Zet datums terug naar stringformaat
+        df[start_col] = df[start_col].dt.strftime('%Y-%m-%d %H:%M:%S')
+        df[end_col] = df[end_col].dt.strftime('%Y-%m-%d %H:%M:%S')
+        print(f"✅ - {start_col} en {end_col} teruggezet naar stringformaat.")
+# ------------------------------------------ Cyclustijd ---------------------------------------------------------------
+
+print("--- Verwerken van Cyclustijd ---")
+kolom = 'Cyclustijd'
+eenheid = ' uur'
+
+# Stap 1: Verwijder eenheid en zet om naar numeriek
+df[kolom] = (
+    df[kolom]
+    .astype(str)
+    .str.replace(eenheid, "", regex=False, case=False)
+    .str.strip()
+)
+df[kolom] = pd.to_numeric(df[kolom], errors='coerce')
+
+# Stap 2: Filter valide waarden volgens originele logica
+valide_masker = (df[kolom] > 0) & (df[kolom] != 9999) & df[kolom].notna()
+
+if valide_masker.any():
+    gemiddelde_cyclustijd = round(df.loc[valide_masker, kolom].mean(), 2)
+    print(f"✅ - De gemiddelde geldige Cyclustijd is {gemiddelde_cyclustijd} uur")
+
+    # Stap 3: Ongeldige waarden identificeren en vervangen
+    ongeldige_waarden = (df[kolom] <= 0) | (df[kolom] == 9999) | df[kolom].isna()
+    aantal_imputaties = ongeldige_waarden.sum()
+
+    df.loc[ongeldige_waarden, kolom] = gemiddelde_cyclustijd
+    print(f"✅ - {aantal_imputaties} ongeldige waarden in {kolom} vervangen door het gemiddelde.")
+else:
+    print(f"⚠️ - Geen geldige waarden gevonden in {kolom} om gemiddelde te berekenen. Imputatie overgeslagen.")
+
+# Stap 4: Terugzetten naar string met eenheid
+df[kolom] = df[kolom].astype(str) + eenheid
+print(f"✅ - {kolom} teruggezet naar stringformaat met eenheid.")
+# ---------------------------------------- ID-kolommen verwerken (Originele stijl) ----------------------------------------
+
+id_kolommen = ['GrindingID', 'PackagingID', 'FillingID']
+max_id_waarde = 8001  # IDs mogen liggen tussen 1 en 8001
+
+for id_kolom in id_kolommen:
+    print(f"--- Verwerken van ID-kolom: {id_kolom} (Originele stijl) ---")
+
+    # Zet tijdelijk om naar string
+    df[id_kolom] = df[id_kolom].astype(str)
+
+    # Identificeer ongeldige waarden
+    is_duplicaat = df[id_kolom].duplicated(keep=False)
+    is_xxxx = df[id_kolom] == 'XXXX'
+    is_negatief = df[id_kolom].str.startswith('-')
+    is_leeg_of_nan = df[id_kolom].isin(['', 'nan', '<NA>'])  # Inclusief lege of speciale waarden
+
+    # Combineer voorwaarden
+    ongeldig_masker = is_duplicaat | is_xxxx | is_negatief | is_leeg_of_nan
+
+    ongeldige_waarden = set(df.loc[ongeldig_masker, id_kolom])
+    print(f"ℹ️ - {len(ongeldige_waarden)} ongeldige of dubbele ID-waarden gevonden in {id_kolom}.")
+
+    if not ongeldige_waarden:
+        print(f"✅ - Geen ongeldige ID’s gevonden in {id_kolom}.")
+    else:
+        # Bepaal reeds bestaande geldige ID’s
+        bestaande_ids = set(df.loc[~ongeldig_masker, id_kolom])
+
+        # Genereer beschikbare ID’s als strings
+        mogelijke_ids = set(map(str, range(1, max_id_waarde + 1)))
+        beschikbare_ids = sorted(list(mogelijke_ids - bestaande_ids))
+        print(f"ℹ️ - {len(beschikbare_ids)} beschikbare ID’s voor toewijzing.")
+
+        nieuwe_id_iter = iter(beschikbare_ids)
+        toegewezen_count = 0
+
+        # Imputatie via iterrows (zoals origineel)
+        rijen_om_bijwerken = df.index[ongeldig_masker]
+        for index in rijen_om_bijwerken:
+            try:
+                nieuwe_id = next(nieuwe_id_iter)
+                df.at[index, id_kolom] = nieuwe_id
+                toegewezen_count += 1
+            except StopIteration:
+                print(f"⚠️ - Geen beschikbare ID’s meer voor {id_kolom}!")
+                df.at[index, id_kolom] = '-1'  # Placeholder bij gebrek aan ID’s
+
+        print(f"✅ - {toegewezen_count} nieuwe ID’s toegewezen in {id_kolom} via iterrows.")
+
+    # Zet terug naar numeriek (Int64 voor ondersteuning van NaNs)
+    df[id_kolom] = pd.to_numeric(df[id_kolom], errors='coerce').astype('Int64')
+    print(f"✅ - {id_kolom} teruggezet naar integer-formaat (Int64).")
+# ---------------------------------------- Roosterprofiel controleren --------------------------------------------------
+
+print("--- Verwerken van Roosterprofiel ---")
+
+geldige_waardes = {'Medium', 'Donker', 'Licht', 'Medium-Donker'}
+
+# Filter rijen met ongeldige waarden (NaNs worden genegeerd)
+ongeldige_rijen = df[
+    ~df['Roosterprofiel'].isin(geldige_waardes) &
+    df['Roosterprofiel'].notna()
+]
+
+if ongeldige_rijen.empty:
+    print("✅ - Roosterprofiel-controle: alle rijen bevatten een geldige waarde of zijn leeg.")
+else:
+    print(f"⚠️ - {len(ongeldige_rijen)} rijen met ongeldige waardes in 'Roosterprofiel' gevonden.")
+# ---------------------------------------- Registratiedatum controleren ------------------------------------------------
+
+print("--- Verwerken van Registratiedatum (Check/Impute Summary) ---")
+
+# De conversie naar datetime en eventuele imputatie zijn eerder al gebeurd.
+# Hier herhalen we alleen de check en berekenen we het gemiddelde verschil opnieuw (zoals in origineel).
+
+# Tijdelijke datetime-conversies voor berekening
+df['Registratiedatum_dt'] = pd.to_datetime(df['Registratiedatum'], errors='coerce')
+df['GrindingDatumTijdStart_dt'] = pd.to_datetime(df['GrindingDatumTijdStart'], errors='coerce')
+
+# Selecteer rijen met een geldig verschil (Registratiedatum < GrindingDatumTijdStart)
+valide_verschillen = df[df['Registratiedatum_dt'] < df['GrindingDatumTijdStart_dt']]
+
+if not valide_verschillen.empty:
+    gemiddeld_verschil = (valide_verschillen['GrindingDatumTijdStart_dt'] - valide_verschillen['Registratiedatum_dt']).mean()
+
+    if pd.notna(gemiddeld_verschil):
+        verschil_in_jaren = round(gemiddeld_verschil.total_seconds() / (365.25 * 24 * 3600), 2)
+        print(f"✅ - Het gemiddelde verschil (herhaalde check) is {verschil_in_jaren} jaar.")
+    else:
+        print("✅ - Kon het gemiddelde verschil niet opnieuw berekenen.")
+else:
+    print("✅ - Geen geldige data voor een herhaalde gemiddeldeverschil-check.")
+
+# Verwijder tijdelijke datetime-kolommen
+df = df.drop(columns=['Registratiedatum_dt', 'GrindingDatumTijdStart_dt'])
+print("✅ - Registratiedatums waren al aangepast en omgezet naar string.")
+# ---------------------------------------- Cost controleren ------------------------------------------------------------
+
+print("--- Verwerken van Cost ---")
+
+kolom = 'Cost'
+eenheid = ' euros'
+
+# Stap 1: Verwijder eenheid en converteer naar numeriek
+df[kolom] = df[kolom].astype(str).str.replace(eenheid, "", regex=False).str.strip()
+df.loc[df[kolom] == '', kolom] = pd.NA  # Lege strings vervangen door NaN
+df[kolom] = pd.to_numeric(df[kolom], errors='coerce')
+
+# Stap 2: Valide waarden bepalen en gemiddelde berekenen
+ongeldig_masker = (df[kolom] < 0) | (df[kolom] > 10000) | df[kolom].isna()
+gemiddelde_kosten = round(df.loc[~ongeldig_masker, kolom].mean(), 2)
+
+print(f"✅ - De gemiddelde geldige kosten zijn {gemiddelde_kosten} euro")
+
+# Stap 3: Imputeer ongeldige waarden met gemiddelde
+aantal_imputaties = ongeldig_masker.sum()
+df.loc[ongeldig_masker, kolom] = gemiddelde_kosten
+print(f"✅ - {aantal_imputaties} ongeldige waarden in {kolom} vervangen door het gemiddelde.")
+
+# Stap 4: Zet terug naar string met eenheid
+df[kolom] = df[kolom].astype(str) + eenheid
+print(f"✅ - {kolom} teruggezet naar stringformaat met eenheid.")
+# ---------------------------------------- PackagingApparaat controleren ----------------------------------------------
+
+print("--- Verwerken van PackagingApparaat ---")
+
+kolom = 'PackagingApparaat'
+
+# Zet kolom om naar string
+df[kolom] = df[kolom].astype(str)
+
+# Originele vervangingen toepassen
+df[kolom] = df[kolom].str.replace("###", "Onbekend apparaat", regex=False).str.strip()
+df[kolom] = df[kolom].replace("nan", "Onbekend apparaat")  # Specifiek 'nan' als string
+
+print(f"✅ - Afwijkende waardes in {kolom} vervangen door 'Onbekend apparaat'.")
+# ---------------------------------------- Laatste Audit controleren --------------------------------------------------
+
+print("--- Verwerken van Laatste Audit ---")
+
+kolom = 'Laatste Audit'
+
+# Zet kolom om naar string
+df[kolom] = df[kolom].astype(str)
+
+# Vervang 'nan' strings door 'Geen Audit'
+df[kolom] = df[kolom].replace("nan", "Geen Audit")
+
+print(f"✅ - 'nan' strings in {kolom} vervangen door 'Geen Audit'.")
+# ---------------------------------------- Leveranciersbeoordeling controleren ----------------------------------------
+
+print("--- Verwerken van Leveranciersbeoordeling ---")
+
+kolom = 'Leveranciersbeoordeling'
+
+# Zet om naar numeriek voor validatie
+df[kolom] = pd.to_numeric(df[kolom], errors='coerce')
+
+# Definieer ongeldige voorwaarden
+ongeldig_masker = (df[kolom] < 0) | (df[kolom] > 10) | df[kolom].isna()
+aantal_ongeldige = ongeldig_masker.sum()
+
+# Zet kolom tijdelijk om naar string
+df[kolom] = df[kolom].astype(str)
+
+# Vervang ongeldige waarden door tekstlabel
+df.loc[ongeldig_masker, kolom] = 'Ongeldige beoordeling'
+
+print(f"✅ - {aantal_ongeldige} ongeldige beoordelingen en lege waarden vervangen door 'Ongeldige beoordeling'.")
+# ---------------------------------------- Fair Trade Score controleren ------------------------------------------------
+
+print("--- Verwerken van Fair-Trade Score ---")
+
+kolom = 'Fair-Trade Score'
+
+# Zet om naar numeriek
+df[kolom] = pd.to_numeric(df[kolom], errors='coerce')
+
+# Identificeer ongeldige waarden
+ongeldig_masker = (df[kolom] < 0) | (df[kolom] > 100) | df[kolom].isna()
+
+# Bereken gemiddelde van geldige waarden (als float)
+gemiddelde_score = df.loc[~ongeldig_masker, kolom].mean()
+
+if pd.notna(gemiddelde_score):
+    gemiddelde_int = int(gemiddelde_score)
+    print(f"✅ - Gemiddelde (int) Fair-Trade Score: {gemiddelde_int}")
+
+    aantal_imputaties = ongeldig_masker.sum()
+    df.loc[ongeldig_masker, kolom] = gemiddelde_int
+    print(f"✅ - {aantal_imputaties} ongeldige of lege Fair-Trade Scores vervangen door het gemiddelde (int).")
+else:
+    print("⚠️ - Kon geen gemiddelde Fair-Trade Score berekenen. Imputatie overgeslagen.")
+# ---------------------------------------- Voorraadniveau controleren --------------------------------------------------
+
+print("--- Verwerken van Voorraadniveaus ---")
+
+kolom = 'Voorraadniveaus'
+eenheid = ' units'
+
+# Zet om naar string en verwijder eenheid
+df[kolom] = df[kolom].astype(str).str.replace(eenheid, "", regex=False).str.strip()
+df.loc[df[kolom] == '', kolom] = pd.NA  # Lege waarden naar NaN
+
+# Zet om naar numeriek
+df[kolom] = pd.to_numeric(df[kolom], errors='coerce')
+
+# Bepaal ongeldige waarden
+ongeldig_masker = (df[kolom] < 0) | (df[kolom] > 10000) | df[kolom].isna()
+
+# Bereken gemiddelde van geldige waarden
+gemiddelde_voorraad = df.loc[~ongeldig_masker, kolom].mean()
+
+if pd.notna(gemiddelde_voorraad):
+    gemiddelde_afgerond = round(gemiddelde_voorraad, 0)
+    print(f"✅ - Het gemiddelde (afgerond) voorraadniveau is {gemiddelde_afgerond} units")
+
+    aantal_imputaties = ongeldig_masker.sum()
+    df.loc[ongeldig_masker, kolom] = gemiddelde_afgerond
+    print(f"✅ - {aantal_imputaties} ongeldige voorraadniveaus vervangen door het gemiddelde.")
+else:
+    print("⚠️ - Kon geen gemiddeld voorraadniveau berekenen. Imputatie overgeslagen.")
+
+# Zet terug naar string met eenheid
+df[kolom] = df[kolom].astype(str) + eenheid
+print(f"✅ - {kolom} teruggezet naar stringformaat met eenheid.")
+# ---------------------------------------- Gewichtscontrole controleren ------------------------------------------------
+
+print("--- Verwerken van Gewichtscontrole ---")
+
+kolom = 'Gewichtscontrole'
+eenheid = ' kg'
+
+
+df[kolom] = df[kolom].astype(str).str.replace(eenheid, "", regex=False).str.strip()
+df.loc[df[kolom] == '', kolom] = pd.NA
+
+df[kolom] = pd.to_numeric(df[kolom], errors='coerce')
+
+ongeldig_masker = (df[kolom] < 0) | (df[kolom] > 10) | df[kolom].isna()
+
+gemiddelde_gewicht = df.loc[~ongeldig_masker, kolom].mean()
+
+if pd.notna(gemiddelde_gewicht):
+    gemiddelde_afgerond = round(gemiddelde_gewicht, 2)
+    print(f"✅ - Het gemiddelde gewicht is {gemiddelde_afgerond} kg")
+
+    aantal_imputaties = ongeldig_masker.sum()
+    df.loc[ongeldig_masker, kolom] = gemiddelde_afgerond
+    print(f" - {aantal_imputaties} ongeldige gewichten in Gewichtscontrole vervangen door het gemiddelde.")
+else:
+    print("️ - Kon geen gemiddeld gewicht berekenen. Imputatie overgeslagen.")
+
+# Stap 5: Zet terug naar string met eenheid
+df[kolom] = df[kolom].astype(str) + eenheid
+print(f"✅ - {kolom} teruggezet naar stringformaat met eenheid.")
+# ---------------------------------------- ProcessTime controleren -----------------------------------------------------
+
+# ---------------------------------------- ProcessTime controleren -----------------------------------------------------
+
+print("--- Verwerken van ProcessTime ---")
+
+kolom = 'ProcessTime'
+eenheid = ' uur'
+
+# Stap 1: Zet kolom om naar string en verwijder ongewenste eenheden
+df[kolom] = df[kolom].astype(str)
+df[kolom] = df[kolom].str.replace(' hours', '', case=False, regex=False)
+df[kolom] = df[kolom].str.replace(' uur', '', case=False, regex=False)
+df[kolom] = df[kolom].str.strip()
+
+# Stap 2: Zet om naar numeriek, ongeldige conversies worden NaN
+df[kolom] = pd.to_numeric(df[kolom], errors='coerce')
+
+# Stap 3: Bepaal ongeldige waarden (negatief of NaN)
+ongeldig_masker = (df[kolom] < 0) | df[kolom].isna()
+
+# Stap 4: Bereken gemiddelde van geldige waarden
+gemiddelde = df.loc[~ongeldig_masker, kolom].mean()
+
+if pd.notna(gemiddelde):
+    gemiddelde_afgerond = round(gemiddelde, 2)
+    print(f"✅ - De gemiddelde geldige ProcessTime is {gemiddelde_afgerond} uur")
+
+    aantal_imputaties = ongeldig_masker.sum()
+    df.loc[ongeldig_masker, kolom] = gemiddelde_afgerond
+    print(f"✅ - {aantal_imputaties} ongeldige waarden in '{kolom}' vervangen door het gemiddelde.")
+else:
+    print("⚠️ - Kon geen gemiddelde ProcessTime berekenen (geen waarden ≥ 0 gevonden?). Imputatie overgeslagen.")
+
+# Stap 5: Zet terug naar string met eenheid
+df[kolom] = df[kolom].astype(str) + eenheid
+print(f"✅ - {kolom} teruggezet naar stringformaat met eenheid.")
+# ---------------------------------------- Duurzaamheidsscore controleren ----------------------------------------------
+
+print("--- Verwerken van Duurzaamheid Score ---")
+
+kolom = 'Duurzaamheid Score'
+
+# Stap 1: Zet om naar string en verwijder witruimte
+df[kolom] = df[kolom].astype(str).str.strip()
+
+# Zet lege strings om naar NA (voor oudere pandas-versies eventueel 'NA' i.p.v. 'pd.NA')
+df.loc[df[kolom] == '', kolom] = pd.NA
+
+# Stap 2: Zet om naar numeriek
+df[kolom] = pd.to_numeric(df[kolom], errors='coerce')
+
+# Stap 3: Bepaal ongeldige waarden
+ongeldig_masker = (df[kolom] < 0) | (df[kolom] > 100) | df[kolom].isna()
+aantal_ongeldige = ongeldig_masker.sum()
+
+# Stap 4: Zet kolom om naar string (nullable) en vervang ongeldige waarden
+df[kolom] = df[kolom].astype("string")
+df.loc[ongeldig_masker, kolom] = 'Ongeldige Duurzaamheidsscore'
+
+print(f"✅ - {aantal_ongeldige} ongeldige waarden in '{kolom}' vervangen door 'Ongeldige Duurzaamheidsscore'.")
+# ---------------------------------------- Energieverbruik controleren -------------------------------------------------
+
+print("--- Verwerken van Energieverbruik ---")
+
+kolom = 'Energieverbruik'
+eenheid = ' kWh'
+
+# Stap 1: Zet om naar string en verwijder eenheid
+df[kolom] = df[kolom].astype(str).str.replace(eenheid, "", regex=False).str.strip()
+df.loc[df[kolom] == '', kolom] = pd.NA  # Lege waarden naar NA
+
+# Stap 2: Zet om naar numeriek
+df[kolom] = pd.to_numeric(df[kolom], errors='coerce')
+
+# Stap 3: Identificeer ongeldige waarden
+ongeldig_masker = (df[kolom] < 0) | (df[kolom] > 1000) | df[kolom].isna()
+
+# Stap 4: Bereken gemiddelde van geldige waarden
+gemiddelde = df.loc[~ongeldig_masker, kolom].mean()
+
+if pd.notna(gemiddelde):
+    gemiddelde_afgerond = round(gemiddelde, 2)
+    print(f"✅ - Het gemiddelde energieverbruik is {gemiddelde_afgerond} kWh")
+
+    aantal_imputaties = ongeldig_masker.sum()
+    df.loc[ongeldig_masker, kolom] = gemiddelde_afgerond
+    print(f"✅ - {aantal_imputaties} ongeldige waarden in de kolom '{kolom}' vervangen door het gemiddelde.")
+else:
+    print("⚠️ - Kon geen gemiddeld energieverbruik berekenen. Imputatie overgeslagen.")
+
+# Stap 5: Zet terug naar string met eenheid
+df[kolom] = df[kolom].astype(str) + eenheid
+print(f"✅ - {kolom} teruggezet naar stringformaat met eenheid.")
+# ---------------------------------------- CO2-Footprint controleren ---------------------------------------------------
+
+print("--- Verwerken van CO2-Footprint ---")
+
+kolom = 'CO2-Footprint'
+eenheid = ' kg CO2/kg'
+
+# Stap 1: Zet om naar string en verwijder eenheid
+df[kolom] = df[kolom].astype(str).str.replace(eenheid, "", regex=False).str.strip()
+df.loc[df[kolom] == '', kolom] = pd.NA  # Lege waarden naar NA
+
+# Stap 2: Zet om naar numeriek
+df[kolom] = pd.to_numeric(df[kolom], errors='coerce')
+
+# Stap 3: Bepaal ongeldige waarden
+ongeldig_masker = (df[kolom] < 0) | (df[kolom] > 1000) | df[kolom].isna()
+
+# Stap 4: Bereken gemiddelde van geldige waarden
+gemiddelde = df.loc[~ongeldig_masker, kolom].mean()
+
+if pd.notna(gemiddelde):
+    gemiddelde_afgerond = round(gemiddelde, 2)
+    print(f"✅ - De gemiddelde CO2-Footprint is {gemiddelde_afgerond} kg CO2/kg")
+
+    aantal_imputaties = ongeldig_masker.sum()
+    df.loc[ongeldig_masker, kolom] = gemiddelde_afgerond
+    print(f"✅ - {aantal_imputaties} ongeldige CO2-Footprint-waarden vervangen door het gemiddelde.")
+else:
+    print("⚠️ - Kon geen gemiddelde CO2-Footprint berekenen. Imputatie overgeslagen.")
+
+# Stap 5: Zet terug naar string met eenheid
+df[kolom] = df[kolom].astype(str) + eenheid
+print(f"✅ - {kolom} teruggezet naar stringformaat met eenheid.")
+# ---------------------------------------- Klanttevredenheid controleren -----------------------------------------------
+
+print("--- Verwerken van Klanttevredenheid ---")
+
+kolom = 'Klanttevredenheid'
+
+# Stap 1: Zet om naar numeriek
+df[kolom] = pd.to_numeric(df[kolom], errors='coerce')
+
+# Stap 2: Bepaal ongeldige waarden
+ongeldig_masker = (df[kolom] < 0) | (df[kolom] > 10) | df[kolom].isna()
+aantal_ongeldige = ongeldig_masker.sum()
+
+# Stap 3: Zet om naar string en vervang ongeldige waarden
+df[kolom] = df[kolom].astype(str)
+df.loc[ongeldig_masker, kolom] = 'Ongeldige Klanttevredenheid'
+
+print(f"✅ - {aantal_ongeldige} ongeldige of lege waarden in '{kolom}' aangepast naar 'Ongeldige Klanttevredenheid'.")
+
+# ---------------------------------------- Lean-analyse  ----------------------------------------
+
+print("--- Uitvoeren van verbeterde Lean-analyse (Cyclustijd per GrindingApparaat) ---")
+
+LEAN_OUTPUT_FILENAME = OUTPUT_FILENAME.replace('.csv', '_lean.csv')
+
+if 'GrindingApparaat' in df.columns and 'Cyclustijd' in df.columns:
+    # Zet 'Cyclustijd' om naar numeriek zonder eenheid
+    df['Cyclustijd_numeriek'] = df['Cyclustijd'].astype(str).str.replace(" uur", "", regex=False).str.strip()
+    df['Cyclustijd_numeriek'] = pd.to_numeric(df['Cyclustijd_numeriek'], errors='coerce')
+
+    # Bereken gemiddelde cyclustijd per GrindingApparaat
+    lean_df = (
+        df.groupby('GrindingApparaat')['Cyclustijd_numeriek']
+        .mean()
+        .round(2)
+        .reset_index()
+        .rename(columns={'Cyclustijd_numeriek': 'Gemiddelde Cyclustijd (uur)'})
+    )
+
+    # Bereken het algemene gemiddelde
+    overall_avg = lean_df['Gemiddelde Cyclustijd (uur)'].mean()
+
+    # Voeg afwijkingsanalyse toe
+    lean_df['Afwijking t.o.v. Gemiddelde (%)'] = (
+        ((lean_df['Gemiddelde Cyclustijd (uur)'] - overall_avg) / overall_avg) * 100
+    ).round(1)
+
+    lean_df['Bottleneck?'] = lean_df['Afwijking t.o.v. Gemiddelde (%)'].apply(lambda x: 'Ja' if x > 20 else 'Nee')
+
+    # Opslaan als aparte CSV
+    try:
+        lean_df.to_csv(LEAN_OUTPUT_FILENAME, index=False, sep=';')
+        print(f"✅ - Lean-analyse met afwijkingen opgeslagen in '{LEAN_OUTPUT_FILENAME}'")
+    except Exception as e:
+        print(f"❌ - Fout bij het opslaan van Lean-analysebestand: {e}")
+
+    # Opruimen tijdelijke kolom
+    df = df.drop(columns=['Cyclustijd_numeriek'])
+
+else:
+    print("⚠️ - Kolommen 'GrindingApparaat' of 'Cyclustijd' niet gevonden. Lean-analyse overgeslagen.")
+
+
+# ---------------------------------------- Wijzigingen opslaan --------------------------------------------------------
+
+print("--- Opslaan van wijzigingen ---")
+
+try:
+    # Sla het opgeschoonde DataFrame op
+    df.to_csv(OUTPUT_FILENAME, index=False)
+    print(f"✅ - Alle aanpassingen zijn opgeslagen in '{OUTPUT_FILENAME}' ({len(df)} rijen totaal).")
+except Exception as e:
+    print(f"❌ Fout bij het opslaan van bestand '{OUTPUT_FILENAME}': {e}")
+
+print("--- Opschoonproces voltooid ---")
+
+
+# ---------------------------------------- DatumTijdFix functie -------------------------------------------------------
+
+def DatumTijdFix():
+    bestand = "Beer_cleaned.csv"
+    try:
+        df_fix = pd.read_csv(bestand, dtype=str)
+        print(f"--- Uitvoeren van DatumTijdFix op '{bestand}' ---")
+    except FileNotFoundError:
+        print(f"❌ ERROR in DatumTijdFix: Bestand niet gevonden op '{bestand}'")
+        return
+
+    # Strip spaties en vervang lege velden door NA
+    date_columns = [
+        "GrindingDatumTijdStart", "GrindingDatumTijdEind",
+        "FillingDatumTijdStart", "FillingDatumTijdEind",
+        "PackagingDatumTijdStart", "PackagingDatumTijdEind"
+    ]
+    bestaande_kolommen = [col for col in date_columns if col in df_fix.columns]
+    df_fix[bestaande_kolommen] = df_fix[bestaande_kolommen].apply(lambda x: x.str.strip()).replace(["", " ", "NaN", "None", "<NA>"], pd.NA)
+
+    # Bepaal condities voor rijen die verwijderd moeten worden
+    verwijder_condities = []
+    if 'GrindingDatumTijdStart' in df_fix.columns and 'GrindingDatumTijdEind' in df_fix.columns:
+        verwijder_condities.append(df_fix[['GrindingDatumTijdStart', 'GrindingDatumTijdEind']].isna().all(axis=1))
+    if 'FillingDatumTijdStart' in df_fix.columns and 'FillingDatumTijdEind' in df_fix.columns:
+        verwijder_condities.append(df_fix[['FillingDatumTijdStart', 'FillingDatumTijdEind']].isna().all(axis=1))
+    if 'PackagingDatumTijdStart' in df_fix.columns and 'PackagingDatumTijdEind' in df_fix.columns:
+        verwijder_condities.append(df_fix[['PackagingDatumTijdStart', 'PackagingDatumTijdEind']].isna().all(axis=1))
+
+    if not verwijder_condities:
+        print("⚠️ - Geen relevante datumkolommen gevonden voor DatumTijdFix.")
+        return
+
+    combined_condition = pd.Series(False, index=df_fix.index)
+    for cond in verwijder_condities:
+        combined_condition |= cond
+
+    te_verwijderen_rijen = df_fix[combined_condition]
+    aantal_verwijderd = len(te_verwijderen_rijen)
+
+    if aantal_verwijderd > 0:
+        try:
+            te_verwijderen_rijen.to_csv(REMOVED_ROWS_FILENAME, index=False)
+            print(f"✅ - {aantal_verwijderd} rijen opgeslagen in '{REMOVED_ROWS_FILENAME}'")
+        except Exception as e:
+            print(f"⚠️ - Fout bij opslaan van verwijderde rijen: {e}")
+
+        df_cleaned = df_fix.drop(te_verwijderen_rijen.index)
+
+        try:
+            df_cleaned.to_csv(bestand, index=False)
+            print(f"✅ - {aantal_verwijderd} rijen verwijderd uit '{bestand}'. Nieuw totaal: {len(df_cleaned)} rijen.")
+        except Exception as e:
+            print(f"❌ Fout bij opslaan van opgeschoond bestand '{bestand}': {e}")
+    else:
+        print("✅ - Geen rijen gemarkeerd voor verwijdering in DatumTijdFix.")
+
+
+# ------------------------------------ sync_cleaned_with_removed functie -----------------------------------------------
+
+def sync_cleaned_with_removed(cleaned_file="Beer_cleaned.csv", removed_file="Beer_removedlines.csv"):
+    """Synchroniseer cleaned-bestand door rijen te verwijderen die in removed-bestand staan."""
+    print("--- Uitvoeren van sync_cleaned_with_removed ---")
+    try:
+        df_cleaned = pd.read_csv(cleaned_file, dtype=str)
+        df_removed = pd.read_csv(removed_file, dtype=str)
+    except FileNotFoundError as e:
+        print(f"❌ ERROR: Bestand niet gevonden - {e}")
+        return
+    except Exception as e:
+        print(f"❌ ERROR tijdens inlezen van bestanden: {e}")
+        return
+
+    if df_removed.empty:
+        print("✅ - Geen verwijderde rijen in removed-bestand. Geen verdere actie nodig.")
+        return
+
+    initiële_rijen = len(df_cleaned)
+    df_synced = df_cleaned.merge(df_removed, how='left', indicator=True).query('_merge == "left_only"').drop(columns=['_merge'])
+    aantal_sync_verwijderd = initiële_rijen - len(df_synced)
+
+    try:
+        df_synced.to_csv(cleaned_file, index=False)
+        print(f"✅ - Sync voltooid: {aantal_sync_verwijderd} rijen verwijderd uit '{cleaned_file}'.")
+    except Exception as e:
+        print(f"❌ Fout bij opslaan van gesynchroniseerd bestand '{cleaned_file}': {e}")
+
+
+# ---------------------------------------- Main Entry Point ------------------------------------------------------------
+
+if __name__ == "__main__":
+    clean_csv()
+
+    print("\n--- Optioneel: Uitvoeren van DatumTijdFix ---")
+    DatumTijdFix()
