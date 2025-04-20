@@ -2,8 +2,10 @@ import pandas as pd
 from datetime import datetime, timedelta
 import numpy as np  # Nodig voor pd.NA en .isna() checks
 
+#In dit script is heel erg veel herhaling, ik heb regelmatig een vrij beknopte uitleg gegeven gezien het feit dat het al erg vaak is uitgelegd.
 
-# Hier wordt het bestand van mij ingelezen, Beer.csv
+
+# Hier wordt het bestand van mij ingelezen, Beer.csv.
 df = pd.read_csv('Beer.csv')
 
 # Hier wordt mijn filepath bepaald, waar mijn bestanden worden opgeslagen dus. (consistent met originele 'DatumTijdFix')
@@ -18,7 +20,7 @@ def clean_csv():
     initial_row_count = len(df)
     print(f"Aantal rijen bij start: {initial_row_count}")
 
-    # Hier worden de dubbele rijen verwijderd
+    # Hier worden de dubbele rijen verwijderd in het bestand
     rows_before = len(df)
     df = df.drop_duplicates()
     dropped_duplicates = rows_before - len(df)
@@ -38,7 +40,7 @@ def clean_csv():
         print("✅ - Alle waarden in 'Audit van Leverancier' zijn geldig of leeg.")
     else:
         print(f"⚠️ - {len(ongeldige_rijen)} rijen met ongeldige waarden in 'Audit van Leverancier' gevonden.")
-        # print(ongeldige_rijen)  # Eventueel inschakelen voor debug
+        # print(ongeldige_rijen)  # Eventueel inschakelen voor debug, dan kunnen we eventueel ook zien waar nog fouten zitten!
     # ---------------------------------- DatumTijd Imputatie (Originele iterrows-stijl) ----------------------------------
 
     date_pairs = [
@@ -54,11 +56,11 @@ def clean_csv():
         df[start_col] = pd.to_datetime(df[start_col], errors='coerce')
         df[end_col] = pd.to_datetime(df[end_col], errors='coerce')
 
-        # Hier Filter ik rijen waar beide datums aanwezig en geldig zijn (eind > start)
+        # Hier filter ik rijen waar beide datums aanwezig en geldig zijn (eind > start), op logische volgorde. Een startdatum na een eindatum is bijvoorbeeld niet logisch.
         valid_rows = df[start_col].notna() & df[end_col].notna() & (df[end_col] > df[start_col])
 
         if valid_rows.any():
-            # De duur berekenen in uren
+            # De duur berekenen in uren, ik vind uren het fijnst om mee te werken en is het overzichtelijkst denk ik.
             df[duration_col] = (df.loc[valid_rows, end_col] - df.loc[valid_rows, start_col]).dt.total_seconds() / 3600
 
             # Gemiddelde duur berekenen
@@ -109,7 +111,7 @@ df[kolom] = (
 )
 df[kolom] = pd.to_numeric(df[kolom], errors='coerce')
 
-# Filter valide waarden met een beetje logica
+# Filter valide waarden met een beetje logica, een waarde van 9999 is natuurlijk erg raar en gaan we dan ook weghalen.
 valide_masker = (df[kolom] > 0) & (df[kolom] != 9999) & df[kolom].notna()
 
 if valide_masker.any():
@@ -136,7 +138,7 @@ max_id_waarde = 8001  # IDs mogen liggen tussen 1 en 8001
 for id_kolom in id_kolommen:
     print(f"--- Verwerken van ID-kolom: {id_kolom} (Originele stijl) ---")
 
-    # Zet tijdelijk om naar string
+    # Zet tijdelijk om naar string, gaan we dus nog aanpassen later
     df[id_kolom] = df[id_kolom].astype(str)
 
     # Identificeren van de ongeldige waarden
@@ -178,7 +180,7 @@ for id_kolom in id_kolommen:
 
         print(f"✅ - {toegewezen_count} nieuwe ID’s toegewezen in {id_kolom} via iterrows.")
 
-    # Zet terug naar numeriek (Int64 voor ondersteuning van NaNs)
+    # Hierzo zetten we de strings weer om naar numeriek. (Int64 voor ondersteuning van NaNs)
     df[id_kolom] = pd.to_numeric(df[id_kolom], errors='coerce').astype('Int64')
     print(f"✅ - {id_kolom} teruggezet naar integer-formaat (Int64).")
 # ---------------------------------------- Roosterprofiel controleren --------------------------------------------------
@@ -230,7 +232,7 @@ print("--- Verwerken van Cost ---")
 kolom = 'Cost'
 eenheid = ' euros'
 
-# Verwijderen eenheid en omzetten naar numeriek
+# Verwijderen eenheid en omzetten naar numeriek, is eigenlijk bij erg veel code hetzelfde verhaal
 df[kolom] = df[kolom].astype(str).str.replace(eenheid, "", regex=False).str.strip()
 df.loc[df[kolom] == '', kolom] = pd.NA  # Lege strings vervangen door NaN
 df[kolom] = pd.to_numeric(df[kolom], errors='coerce')
@@ -246,7 +248,7 @@ aantal_imputaties = ongeldig_masker.sum()
 df.loc[ongeldig_masker, kolom] = gemiddelde_kosten
 print(f"✅ - {aantal_imputaties} ongeldige waarden in {kolom} vervangen door het gemiddelde.")
 
-# Terug zetten naar string met eenheid
+#  En ook hier weer terug zetten naar string met eenheid
 df[kolom] = df[kolom].astype(str) + eenheid
 print(f"✅ - {kolom} teruggezet naar stringformaat met eenheid.")
 # ---------------------------------------- PackagingApparaat controleren ----------------------------------------------
@@ -255,7 +257,7 @@ print("--- Verwerken van PackagingApparaat ---")
 
 kolom = 'PackagingApparaat'
 
-# Kolon omzetten naar string
+# Kolom omzetten naar string
 df[kolom] = df[kolom].astype(str)
 
 # Originele vervangingen toepassen
@@ -327,7 +329,7 @@ print("--- Verwerken van Voorraadniveaus ---")
 kolom = 'Voorraadniveaus'
 eenheid = ' units'
 
-# Zet om naar string en verwijder eenheid
+# Omzetten naar string en verwijderen de eenheid
 df[kolom] = df[kolom].astype(str).str.replace(eenheid, "", regex=False).str.strip()
 df.loc[df[kolom] == '', kolom] = pd.NA  # Lege waarden naar NaN
 
@@ -392,13 +394,13 @@ print("--- Verwerken van ProcessTime ---")
 kolom = 'ProcessTime'
 eenheid = ' uur'
 
-# Zet kolom om naar string en verwijder ongewenste eenheden
+# Zet kolom om naar string en verwijder eenheden die wij niet willen hebben
 df[kolom] = df[kolom].astype(str)
 df[kolom] = df[kolom].str.replace(' hours', '', case=False, regex=False)
 df[kolom] = df[kolom].str.replace(' uur', '', case=False, regex=False)
 df[kolom] = df[kolom].str.strip()
 
-# Zet om naar numeriek, ongeldige conversies worden NaN
+# Zet om naar numeriek, ongeldigheden worden NaN
 df[kolom] = pd.to_numeric(df[kolom], errors='coerce')
 
 # Bepaal ongeldige waarden (negatief of NaN)
@@ -426,10 +428,10 @@ print("--- Verwerken van Duurzaamheid Score ---")
 
 kolom = 'Duurzaamheid Score'
 
-# Zet om naar string en verwijder witruimte
+# Zet om naar string en verwijder de witruimte
 df[kolom] = df[kolom].astype(str).str.strip()
 
-# Zet lege strings om naar NA (voor oudere pandas-versies eventueel 'NA' i.p.v. 'pd.NA')
+# Zet lege strings om naar NA 
 df.loc[df[kolom] == '', kolom] = pd.NA
 
 #  Zet om naar numeriek
